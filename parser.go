@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-type env struct {
+type Env struct {
 	name         string
 	description  []string
 	mandatory    bool
@@ -18,72 +21,96 @@ type env struct {
 	separator    string
 }
 
-type envFile struct {
-	envs []env
+type EnvFile struct {
+	envs []Env
 }
 
-func (ef envFile) marshal() []byte {
-	b := bytes.Buffer{}
-	for _, e := range ef.envs {
-		for _, line := range e.description {
-			b.WriteString("#" + line + "\n")
+func (ef EnvFile) marshal() []byte {
+	var resultFile bytes.Buffer
+
+	for _, env := range ef.envs {
+		for _, line := range env.description {
+			resultFile.WriteString("#" + line + "\n")
 		}
 
 		var additional []string
 
-		if e.example != "" {
-			additional = append(additional, "Пример:\""+e.example+"\"")
+		if env.example != "" {
+			additional = append(additional, "Пример:\""+env.example+"\"")
 		}
 
-		if e.separator != "" {
-			additional = append(additional, "Разделитель:\""+e.separator+"\"")
+		if env.separator != "" {
+			additional = append(additional, "Разделитель:\""+env.separator+"\"")
 		}
 
 		if len(additional) > 0 {
-			b.WriteString("#" + strings.Join(additional, ". ") + "\n")
+			resultFile.WriteString("#" + strings.Join(additional, ". ") + "\n")
 		}
 
-		if e.mandatory {
-			b.WriteString("#")
+		if env.mandatory {
+			resultFile.WriteString("#")
 		}
 
-		b.WriteString(e.name + "=" + e.defaultValue + "\n\n")
-
+		resultFile.WriteString(env.name + "=" + env.defaultValue + "\n\n")
 	}
 
-	return b.Bytes()
+	return resultFile.Bytes()
 }
 
-type envFiles map[string]envFile
+type EnvFiles map[string]EnvFile
 
-func (efs envFiles) Save(outputDir string) error {
+func (efs EnvFiles) Save(outputDir string) error {
 	for name, file := range efs {
-		if err := os.WriteFile(filepath.Join(outputDir, name), file.marshal(), 0644); err != nil {
-			return err
+		pathName := filepath.Join(outputDir, name)
+
+		if err := os.WriteFile(pathName, file.marshal(), 0600); err != nil { //nolint:gofumpt,gomnd
+			return fmt.Errorf("failed save result file %s: %w", name, err)
 		}
 	}
 
 	return nil
 }
 
-type envParser struct {
+type EnvParser struct {
 	objects map[string]*ast.Object
 }
 
-func NewParser(objects map[string]*ast.Object) envParser {
-	return envParser{
+func NewParserFromASTObjects(objects map[string]*ast.Object) EnvParser {
+	return EnvParser{
 		objects: objects,
 	}
 }
 
-func (ep envParser) FindStructs(targetStructs []string) (envParser, error) {
+func NewParserFromFile(filePath string) (EnvParser, error) {
+	fset := token.NewFileSet()
+
+	f, err := parser.ParseFile(fset, filePath, nil, parser.ParseComments|parser.Trace)
+	if err != nil {
+		return EnvParser{}, fmt.Errorf("failed to parse source: %w", err)
+	}
+
+	return NewParserFromASTObjects(f.Scope.Objects), nil
+}
+
+func NewParserFromReader(r io.Reader) (EnvParser, error) {
+	fset := token.NewFileSet()
+
+	f, err := parser.ParseFile(fset, "", r, parser.ParseComments|parser.Trace)
+	if err != nil {
+		return EnvParser{}, fmt.Errorf("failed to parse source: %w", err)
+	}
+
+	return NewParserFromASTObjects(f.Scope.Objects), nil
+}
+
+func (ep EnvParser) FindStructs(targetStructs []string) (EnvParser, error) {
 	objects := make(map[string]*ast.Object, len(targetStructs))
 
 	for _, targetStruct := range targetStructs {
 		for key, obj := range ep.objects {
 			if obj.Name == targetStruct {
 				if obj.Kind != ast.Typ {
-					return ep, fmt.Errorf("invalid type of target: %s", targetStruct)
+					return ep, fmt.Errorf("fiailde to parse struct %s: %w", targetStruct, ErrInvalidType)
 				}
 
 				objects[key] = obj
@@ -91,20 +118,26 @@ func (ep envParser) FindStructs(targetStructs []string) (envParser, error) {
 		}
 	}
 
-	return envParser{
+	return EnvParser{
 		objects: objects,
 	}, nil
 }
 
-func (ep envParser) ParseFields() envFiles {
-	res := make(envFiles, len(ep.objects))
+func (ep EnvParser) ParseFields() EnvFiles {
+	envFiles := make(EnvFiles, len(ep.objects))
 
 	for _, object := range ep.objects {
-		if object.Decl == nil || object.Decl.(*ast.TypeSpec).Type == nil {
+		typeSpec, ok := object.Decl.(*ast.TypeSpec)
+		if !ok {
 			continue
 		}
 
-		comments := object.Decl.(*ast.TypeSpec).Comment
+		structType, ok := typeSpec.Type.(*ast.StructType)
+		if !ok {
+			continue
+		}
+
+		comments := typeSpec.Comment
 		if comments == nil {
 			continue
 		}
@@ -117,28 +150,30 @@ func (ep envParser) ParseFields() envFiles {
 
 		fileName := strings.TrimSpace(strings.TrimPrefix(commentsList[0].Text, "//"))
 
-		fields := object.Decl.(*ast.TypeSpec).Type.(*ast.StructType).Fields
+		file := envFiles[fileName]
+
+		fields := structType.Fields
 		if fields == nil {
 			continue
 		}
 
 		fieldsList := fields.List
 
-		file := res[fileName]
-
 		if file.envs == nil {
-			file.envs = make([]env, 0, len(fieldsList))
+			file.envs = make([]Env, 0, len(fieldsList))
 		}
 
 		file.envs = append(file.envs, parseFields(fieldsList)...)
 
-		res[fileName] = file
+		envFiles[fileName] = file
 	}
 
-	return res
+	return envFiles
 }
 
-func parseFields(fieldsList []*ast.Field) (envs []env) {
+func parseFields(fieldsList []*ast.Field) []Env {
+	envs := make([]Env, 0, len(fieldsList))
+
 	for _, field := range fieldsList {
 		switch v := field.Type.(type) {
 		case *ast.Ident:
@@ -146,6 +181,7 @@ func parseFields(fieldsList []*ast.Field) (envs []env) {
 		case *ast.ArrayType:
 		case *ast.StructType:
 			envs = append(envs, parseFields(v.Fields.List)...)
+
 			continue
 		}
 
@@ -153,7 +189,7 @@ func parseFields(fieldsList []*ast.Field) (envs []env) {
 			continue
 		}
 
-		e, ok := parseFromTagsString(field.Tag.Value)
+		env, ok := parseEnvFromTagsString(field.Tag.Value)
 		if !ok {
 			continue
 		}
@@ -163,50 +199,46 @@ func parseFields(fieldsList []*ast.Field) (envs []env) {
 
 			for _, doc := range docList {
 				line := strings.TrimSpace(strings.TrimPrefix(doc.Text, "//"))
-				e.description = append(e.description, line)
+				env.description = append(env.description, line)
 			}
 		}
 
-		envs = append(envs, e)
+		envs = append(envs, env)
 	}
 
 	return envs
 }
 
-func parseFromTagsString(tagsString string) (e env, ok bool) {
+func parseEnvFromTagsString(tagsString string) (Env, bool) {
+	var env Env
+
 	tagStrings := strings.Fields(tagsString[1 : len(tagsString)-1])
 
 	for _, tagString := range tagStrings {
 		delimiter := strings.Index(tagString, ":")
 		if delimiter == -1 {
-			return e, false
+			return env, false
 		}
 
 		tagKey := tagString[:delimiter]
 		tagValues := strings.Split(tagString[delimiter+2:len(tagString)-1], ",")
 
 		if len(tagValues) == 0 {
-			return e, false
+			return env, false
 		}
 
 		switch tagKey {
 		case "env":
-			for _, value := range tagValues {
-				switch value {
-				case "required":
-					e.mandatory = true
-				default:
-					e.name = value
-				}
-			}
+			env.name = tagValues[0]
+			env.mandatory = contains(tagValues, "required")
 		case "envDefault":
-			e.defaultValue = tagValues[0]
+			env.defaultValue = tagValues[0]
 		case "envSeparator":
-			e.separator = tagValues[0]
+			env.separator = tagValues[0]
 		case "envExample":
-			e.separator = tagValues[0]
+			env.separator = tagValues[0]
 		}
 	}
 
-	return e, true
+	return env, true
 }

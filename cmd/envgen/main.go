@@ -2,9 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
-	"go/parser"
-	"go/token"
 	"log"
 	"strings"
 
@@ -30,25 +27,22 @@ func main() {
 		log.Fatal("error: empty outPutDir flag")
 	}
 
-	fset := token.NewFileSet()
-
-	f, err := parser.ParseFile(fset, *target, nil, parser.ParseComments|parser.Trace)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
 	structsNames := strings.Split(*structs, ",")
 	if len(structsNames) == 0 {
 		log.Fatal("invalid structs value")
 	}
 
-	ep, err := envgen.NewParser(f.Scope.Objects).FindStructs(structsNames)
+	envParser, err := envgen.NewParserFromFile(*target)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if err := ep.ParseFields().Save(*outPutDir); err != nil {
+	envParser, err = envParser.FindStructs(structsNames)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := envParser.ParseFields().Save(*outPutDir); err != nil {
 		log.Fatal(err)
 	}
 }

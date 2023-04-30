@@ -1,0 +1,17 @@
+linters:
+  enable-all: true
+  disable:
+    - ifshort
+    - interfacer
+    - scopelint
+    - deadcode
+    - nosnakecase
+    - golint
+    - maligned
+    - structcheck
+    - exhaustivestruct
+    - varcheck
+
+linters-settings:
+  varnamelen:
+    ignore-type-assert-ok: true
