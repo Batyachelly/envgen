@@ -51,13 +51,15 @@ func (ep EnvParser) FindStructs(targetStructs []string) (EnvParser, error) {
 
 	for _, targetStruct := range targetStructs {
 		for key, obj := range ep.objects {
-			if obj.Name == targetStruct {
-				if obj.Kind != ast.Typ {
-					return ep, fmt.Errorf("fiailde to parse struct %s: %w", targetStruct, ErrInvalidASTObjectType)
-				}
-
-				objects[key] = obj
+			if obj.Name != targetStruct {
+				continue
 			}
+
+			if obj.Kind != ast.Typ {
+				return ep, fmt.Errorf("fiailde to parse struct %s: %w", targetStruct, ErrInvalidASTObjectType)
+			}
+
+			objects[key] = obj
 		}
 	}
 
@@ -81,27 +83,21 @@ func (ep EnvParser) ParseFields() EnvFiles {
 			continue
 		}
 
-		comments := typeSpec.Comment
-		if comments == nil {
+		if typeSpec.Comment == nil || len(typeSpec.Comment.List) == 0 {
 			continue
 		}
 
-		commentsList := comments.List
+		comment := typeSpec.Comment.List[0].Text
 
-		if len(commentsList) == 0 {
-			continue
-		}
-
-		fileName := strings.TrimSpace(strings.TrimPrefix(commentsList[0].Text, "//"))
+		fileName := strings.TrimSpace(strings.TrimPrefix(comment, "//"))
 
 		file := envFiles[fileName]
 
-		fields := structType.Fields
-		if fields == nil {
+		if structType.Fields == nil {
 			continue
 		}
 
-		fieldsList := fields.List
+		fieldsList := structType.Fields.List
 
 		if file.Envs == nil {
 			file.Envs = make([]Env, 0, len(fieldsList))

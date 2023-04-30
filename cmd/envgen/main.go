@@ -9,6 +9,24 @@ import (
 )
 
 func main() {
+	target, structsNames, outPutDir := parseFlags()
+
+	envParser, err := envgen.NewParserFromFile(target)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	envParser, err = envParser.FindStructs(structsNames)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := envParser.ParseFields().Save(outPutDir); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func parseFlags() (string, []string, string) {
 	target := flag.String("target", "", "target file for parsing")
 	structs := flag.String("structs", "", "list of structures for parsing, separated by commas")
 	outPutDir := flag.String("output_dir", "", "directory where the .env files will be generated")
@@ -32,17 +50,5 @@ func main() {
 		log.Fatal("invalid structs value")
 	}
 
-	envParser, err := envgen.NewParserFromFile(*target)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	envParser, err = envParser.FindStructs(structsNames)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if err := envParser.ParseFields().Save(*outPutDir); err != nil {
-		log.Fatal(err)
-	}
+	return *target, structsNames, *outPutDir
 }
